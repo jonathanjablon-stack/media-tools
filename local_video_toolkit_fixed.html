@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Local Video Toolkit (FFmpeg.wasm)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 22px; max-width: 1100px; }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    .muted { opacity: .75; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 14px; padding: 14px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    label { display: inline-flex; gap: 6px; align-items: center; }
+    input[type="number"], input[type="text"] { width: 120px; padding: 7px 8px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); background: transparent; }
+    input[type="range"] { width: 220px; }
+    select, button { padding: 8px 10px; border-radius: 12px; border: 1px solid rgba(127,127,127,.35); background: transparent; }
+    button { cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    progress { width: 100%; height: 18px; }
+    #drop { padding: 18px; border-radius: 14px; border: 2px dashed rgba(127,127,127,.55); text-align: center; }
+    #drop.drag { border-color: currentColor; }
+    #log { white-space: pre-wrap; background: rgba(127,127,127,.12); padding: 10px; border-radius: 12px; max-height: 240px; overflow: auto; }
+    #files { font-size: 13px; }
+    .pill { display: inline-flex; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid rgba(127,127,127,.35); border-radius: 999px; margin: 6px 6px 0 0; }
+    .right { text-align: right; }
+    .small { font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+      .warn { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,165,0,.6); background: rgba(255,165,0,.12); }
+  </style>
+</head>
+<body>
+  <h1>Local Video Toolkit</h1>
+  <div class="muted">
+    Everything runs locally in your browser via <span class="mono">ffmpeg.wasm</span> (no uploads). First run downloads the ffmpeg core. Long videos can be RAM-heavy.
+  </div>
+
+  <div id="fileOriginWarning" class="warn" style="display:none; margin-top:12px">
+    <strong>This page is opened as a local file (file://).</strong><br>
+    FFmpeg.wasm uses a Web Worker, and browsers block loading worker scripts from a <code>null</code> origin.
+    <div style="margin-top:8px">
+      Fix: serve this folder over <code>http://localhost</code> and open it via http.
+      <div class="mono" style="margin-top:6px">
+        Windows: <code>python -m http.server 8000</code><br>
+        Mac/Linux: <code>python3 -m http.server 8000</code><br>
+        Then open: <code>http://localhost:8000/local_video_toolkit_fixed.html</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <input id="picker" type="file" accept="video/*,audio/*" multiple />
+    <button id="clearBtn" type="button">Clear</button>
+    <span id="summary" class="muted"></span>
+  </div>
+
+  <div id="drop" class="card" tabindex="0" aria-label="Drop files here">
+    Drop video/audio files here (or use the file picker). Batch processing supported.
+    <div class="small muted" style="margin-top:6px">Tip: If a file is huge, prefer trimming before resizing.</div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card">
+      <h3 style="margin:0 0 8px">Resize / Transcode</h3>
+
+      <div class="row">
+        <label>
+          Output
+          <select id="outKind">
+            <option value="mp4" selected>MP4 (H.264 + AAC)</option>
+            <option value="webm">WebM (VP9 + Opus)</option>
+            <option value="gif">GIF (animated)</option>
+            <option value="audio">Audio only</option>
+          </select>
+        </label>
+
+        <label>
+          Preset
+          <select id="preset">
+            <option value="ultrafast">ultrafast</option>
+            <option value="superfast">superfast</option>
+            <option value="veryfast" selected>veryfast</option>
+            <option value="faster">faster</option>
+            <option value="fast">fast</option>
+            <option value="medium">medium</option>
+          </select>
+        </label>
+
+        <label id="crfWrap">
+          CRF
+          <input id="crf" type="number" min="16" max="35" step="1" value="23" />
+        </label>
+      </div>
+
+      <div class="row">
+        <label>
+          Resolution
+          <select id="resPreset">
+            <option value="keep" selected>Keep original</option>
+            <option value="480">480p (854×480)</option>
+            <option value="720">720p (1280×720)</option>
+            <option value="1080">1080p (1920×1080)</option>
+            <option value="1440">1440p (2560×1440)</option>
+            <option value="2160">4K (3840×2160)</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+
+        <label id="wWrap" style="display:none">
+          W <input id="w" type="number" min="16" step="2" value="1280" />
+        </label>
+        <label id="hWrap" style="display:none">
+          H <input id="h" type="number" min="16" step="2" value="720" />
+        </label>
+
+        <label>
+          Scale
+          <select id="scaleMode">
+            <option value="fit" selected>Fit (preserve aspect)</option>
+            <option value="fill">Fill (crop to fit)</option>
+            <option value="force">Force (may stretch)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row" id="bitrateWrap">
+        <label>
+          Video bitrate (kbps)
+          <input id="vbitrate" type="number" min="100" step="50" value="2500" />
+        </label>
+        <label class="small muted">
+          (Optional: leave blank to use CRF-driven quality)
+        </label>
+      </div>
+
+      <div class="row" id="gifWrap" style="display:none">
+        <label>
+          FPS
+          <input id="gifFps" type="number" min="5" max="60" step="1" value="15" />
+        </label>
+        <label>
+          GIF width (px)
+          <input id="gifW" type="number" min="100" step="10" value="480" />
+        </label>
+        <span class="small muted">GIFs get big fast — lower width/FPS.</span>
+      </div>
+
+      <div class="row" id="audioWrap" style="display:none">
+        <label>
+          Format
+          <select id="audioFmt">
+            <option value="m4a" selected>M4A (AAC)</option>
+            <option value="wav">WAV (PCM)</option>
+          </select>
+        </label>
+        <label id="abWrap">
+          Audio bitrate (kbps)
+          <input id="abitrate" type="number" min="64" step="16" value="160" />
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px">Trim / Batch / Run</h3>
+
+      <div class="row">
+        <label>
+          Start (HH:MM:SS or seconds)
+          <input id="tStart" type="text" placeholder="e.g., 00:00:05" />
+        </label>
+        <label>
+          End (HH:MM:SS or seconds)
+          <input id="tEnd" type="text" placeholder="e.g., 00:00:20" />
+        </label>
+        <span class="small muted">Leave blank for full length.</span>
+      </div>
+
+      <div class="row">
+        <label>
+          Process
+          <select id="batchMode">
+            <option value="all" selected>All selected files</option>
+            <option value="first">Only the first file</option>
+          </select>
+        </label>
+
+        <label>
+          Naming
+          <select id="nameMode">
+            <option value="suffix" selected>Add suffix (recommended)</option>
+            <option value="replace">Replace extension only</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row">
+        <button id="runBtn" type="button" disabled>Run</button>
+        <button id="stopBtn" type="button" disabled>Stop</button>
+        <span id="status" class="muted"></span>
+      </div>
+
+      <progress id="prog" value="0" max="1"></progress>
+      <div class="row small">
+        <div class="pill"><span class="muted">Queue</span> <span id="qCount">0</span></div>
+        <div class="pill"><span class="muted">Current</span> <span id="curName">—</span></div>
+        <div class="pill"><span class="muted">Stage</span> <span id="stage">—</span></div>
+      </div>
+
+      <div style="margin-top:10px">
+        <div class="small muted">Selected files:</div>
+        <div id="files"></div>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin:14px 0 8px">Log</h3>
+  <div id="log"></div>
+
+  <!-- UMD builds: friendlier for local file:// usage -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    const statusEl = $("status");
+    const progEl = $("prog");
+    const filesEl = $("files");
+    const summaryEl = $("summary");
+    const qCountEl = $("qCount");
+    const curNameEl = $("curName");
+    const stageEl = $("stage");
+
+    function log(msg) {
+      logEl.textContent += msg + "\\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function humanMB(n) { return (n/1024/1024).toFixed(1) + " MB"; }
+
+    const { FFmpeg } = FFmpegWASM;
+    const { fetchFile } = FFmpegUtil;
+    const ffmpeg = new FFmpeg();
+
+    let loaded = false;
+    let stopRequested = false;
+    let selectedFiles = [];
+
+    async function ensureLoaded() {
+      if (loaded) return;
+      stageEl.textContent = "loading";
+      statusEl.textContent = "Loading ffmpeg core (first run)…";
+      log("Loading ffmpeg…");
+
+      await ffmpeg.load({
+        coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+        wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm"
+      });
+
+      ffmpeg.on("log", ({ message }) => log(message));
+      ffmpeg.on("progress", ({ ratio }) => {
+        progEl.value = Math.max(0, Math.min(1, ratio || 0));
+      });
+
+      loaded = true;
+      stageEl.textContent = "ready";
+      statusEl.textContent = "Ready.";
+      log("ffmpeg ready.");
+    }
+
+    function safeBaseName(name) {
+      const base = name.replace(/\\.[^.]+$/, "");
+      return base.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80);
+    }
+
+    function parseTime(t) {
+      if (!t) return null;
+      const s = String(t).trim();
+      if (!s) return null;
+      if (/^\\d+(\\.\\d+)?$/.test(s)) return s; // seconds
+      if (/^\\d{1,2}:\\d{2}:\\d{2}(\\.\\d+)?$/.test(s)) return s;
+      // tolerate MM:SS
+      if (/^\\d{1,2}:\\d{2}(\\.\\d+)?$/.test(s)) return "00:" + s;
+      throw new Error("Bad time format: " + s);
+    }
+
+    function downloadBlob(blob, filename) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    function setSelectedFiles(files) {
+      selectedFiles = files || [];
+      qCountEl.textContent = String(selectedFiles.length);
+      $("runBtn").disabled = selectedFiles.length === 0;
+      filesEl.innerHTML = "";
+      if (selectedFiles.length === 0) {
+        summaryEl.textContent = "";
+        return;
+      }
+      const total = selectedFiles.reduce((a,f)=>a+f.size,0);
+      summaryEl.textContent = `${selectedFiles.length} file(s), ${humanMB(total)}`;
+
+      for (const f of selectedFiles) {
+        const pill = document.createElement("div");
+        pill.className = "pill";
+        pill.innerHTML = `<span class="mono">${f.name}</span> <span class="muted">(${humanMB(f.size)})</span>`;
+        filesEl.appendChild(pill);
+      }
+    }
+
+    function updateUIForOutKind() {
+      const kind = $("outKind").value;
+      $("gifWrap").style.display = (kind === "gif") ? "" : "none";
+      $("audioWrap").style.display = (kind === "audio") ? "" : "none";
+      $("bitrateWrap").style.display = (kind === "mp4" || kind === "webm") ? "" : "none";
+      $("crfWrap").style.display = (kind === "mp4" || kind === "webm") ? "" : "none";
+      // audio bitrate only for m4a; wav ignores it
+      $("abWrap").style.display = ($("audioFmt").value === "m4a") ? "" : "none";
+    }
+
+    function updateUIForResPreset() {
+      const v = $("resPreset").value;
+      const isCustom = v === "custom";
+      $("wWrap").style.display = isCustom ? "" : "none";
+      $("hWrap").style.display = isCustom ? "" : "none";
+      if (!isCustom && v !== "keep") {
+        const map = { "480":[854,480], "720":[1280,720], "1080":[1920,1080], "1440":[2560,1440], "2160":[3840,2160] };
+        const [w,h] = map[v];
+        $("w").value = w;
+        $("h").value = h;
+      }
+    }
+
+    $("outKind").addEventListener("change", updateUIForOutKind);
+    $("audioFmt").addEventListener("change", updateUIForOutKind);
+    $("resPreset").addEventListener("change", updateUIForResPreset);
+
+    // Picker
+    $("picker").addEventListener("change", () => {
+      const files = Array.from($("picker").files || []);
+      setSelectedFiles(files);
+    });
+
+    // Clear
+    $("clearBtn").addEventListener("click", () => {
+      $("picker").value = "";
+      setSelectedFiles([]);
+      logEl.textContent = "";
+      statusEl.textContent = "";
+      progEl.value = 0;
+      curNameEl.textContent = "—";
+      stageEl.textContent = "—";
+    });
+
+    // Drag & drop
+    const drop = $("drop");
+    ["dragenter","dragover"].forEach(evt => drop.addEventListener(evt, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      drop.classList.add("drag");
+    }));
+    ["dragleave","drop"].forEach(evt => drop.addEventListener(evt, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      drop.classList.remove("drag");
+    }));
+    drop.addEventListener("drop", (e) => {
+      const files = Array.from(e.dataTransfer.files || []);
+      // keep only video/audio-ish
+      const filtered = files.filter(f => (f.type || "").startsWith("video/") || (f.type || "").startsWith("audio/"));
+      setSelectedFiles(filtered);
+      $("picker").value = "";
+    });
+
+    $("stopBtn").addEventListener("click", () => {
+      stopRequested = true;
+      statusEl.textContent = "Stop requested…";
+      stageEl.textContent = "stopping";
+    });
+
+    function buildScaleFilter(targetW, targetH, mode) {
+      // Ensure even dimensions for encoders that require it (H.264). We'll keep -2 where possible.
+      if (!targetW || !targetH) return null;
+
+      if (mode === "force") {
+        return `scale=${targetW}:${targetH},setsar=1`;
+      }
+
+      if (mode === "fit") {
+        // Fit inside, pad to exact dims
+        return [
+          `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease`,
+          `pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2`,
+          "setsar=1"
+        ].join(",");
+      }
+
+      // fill: cover then crop
+      return [
+        `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`,
+        `crop=${targetW}:${targetH}`,
+        "setsar=1"
+      ].join(",");
+    }
+
+    async function runOne(file) {
+      stopRequested = false;
+      progEl.value = 0;
+
+      const outKind = $("outKind").value;
+      const preset = $("preset").value;
+      const crf = String(parseInt($("crf").value || "23", 10));
+      const scaleMode = $("scaleMode").value;
+
+      let tStart = null, tEnd = null;
+      try {
+        tStart = parseTime($("tStart").value);
+        tEnd = parseTime($("tEnd").value);
+      } catch (e) {
+        throw e;
+      }
+
+      const resPreset = $("resPreset").value;
+      let targetW = null, targetH = null;
+      if (resPreset !== "keep") {
+        targetW = parseInt($("w").value, 10);
+        targetH = parseInt($("h").value, 10);
+      }
+
+      const base = safeBaseName(file.name);
+      const nameMode = $("nameMode").value;
+
+      // Prep filenames in FFmpeg FS
+      const inName = "input";
+      const ext = (file.name.split(".").pop() || "").toLowerCase();
+
+      // Clean old FS artifacts
+      stageEl.textContent = "prep";
+      try { await ffmpeg.deleteFile(inName); } catch {}
+      for (const fn of ["out.mp4","out.webm","out.gif","out.m4a","out.wav","palette.png"]) {
+        try { await ffmpeg.deleteFile(fn); } catch {}
+      }
+
+      stageEl.textContent = "read";
+      statusEl.textContent = `Reading ${file.name}…`;
+      await ffmpeg.writeFile(inName, await fetchFile(file));
+
+      // Common args: put -ss before -i for speed when possible (but can be less accurate). We'll do after -i for reliability.
+      const trimArgs = [];
+      if (tStart) trimArgs.push("-ss", tStart);
+      if (tEnd) trimArgs.push("-to", tEnd);
+
+      // Build filters
+      const vfParts = [];
+      const scaleFilter = buildScaleFilter(targetW, targetH, scaleMode);
+      if (scaleFilter) vfParts.push(scaleFilter);
+
+      // Output
+      let outFsName = "out.mp4";
+      let outMime = "video/mp4";
+      let outExt = "mp4";
+
+      const cmd = [];
+
+      // Input
+      cmd.push("-i", inName);
+      // Trim (after input for accuracy)
+      cmd.push(...trimArgs);
+
+      if (outKind === "mp4") {
+        outFsName = "out.mp4"; outMime = "video/mp4"; outExt = "mp4";
+        if (vfParts.length) cmd.push("-vf", vfParts.join(","));
+        cmd.push("-c:v", "libx264", "-preset", preset, "-crf", crf);
+
+        // Optional bitrate override (kbps)
+        const vb = ($("vbitrate").value || "").trim();
+        if (vb) cmd.push("-b:v", `${parseInt(vb,10)}k`);
+
+        cmd.push("-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", outFsName);
+      }
+
+      if (outKind === "webm") {
+        outFsName = "out.webm"; outMime = "video/webm"; outExt = "webm";
+        if (vfParts.length) cmd.push("-vf", vfParts.join(","));
+        // VP9 + Opus
+        cmd.push("-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0");
+
+        const vb = ($("vbitrate").value || "").trim();
+        if (vb) cmd.push("-b:v", `${parseInt(vb,10)}k`);
+
+        cmd.push("-c:a", "libopus", "-b:a", "128k", outFsName);
+      }
+
+      if (outKind === "audio") {
+        const fmt = $("audioFmt").value;
+        if (fmt === "wav") {
+          outFsName = "out.wav"; outMime = "audio/wav"; outExt = "wav";
+          cmd.push("-vn", "-c:a", "pcm_s16le", outFsName);
+        } else {
+          outFsName = "out.m4a"; outMime = "audio/mp4"; outExt = "m4a";
+          const ab = String(parseInt($("abitrate").value || "160", 10));
+          cmd.push("-vn", "-c:a", "aac", "-b:a", `${ab}k`, outFsName);
+        }
+      }
+
+      if (outKind === "gif") {
+        outFsName = "out.gif"; outMime = "image/gif"; outExt = "gif";
+        const fps = parseInt($("gifFps").value || "15", 10);
+        const gifW = parseInt($("gifW").value || "480", 10);
+
+        // Use palettegen/paletteuse for better quality
+        // Build GIF filters: fps, scale (keep aspect, width=gifW, height=-1), optional trim
+        const gifScale = `scale=${gifW}:-1:flags=lanczos`;
+        const gifFilters = [`fps=${fps}`, gifScale, "split[s0][s1]", "[s0]palettegen[p]", "[s1][p]paletteuse"];
+        cmd.push("-vf", gifFilters.join(","), outFsName);
+      }
+
+      stageEl.textContent = "transcode";
+      statusEl.textContent = `Processing ${file.name}…`;
+      log("\\n=== COMMAND ===\\n" + cmd.join(" "));
+
+      await ffmpeg.exec(cmd);
+
+      stageEl.textContent = "write";
+      statusEl.textContent = "Preparing download…";
+      const data = await ffmpeg.readFile(outFsName);
+
+      const blob = new Blob([data.buffer], { type: outMime });
+
+      let outName;
+      if (nameMode === "replace") {
+        outName = base + "." + outExt;
+      } else {
+        // suffix naming
+        const suffixParts = [];
+        if (outKind === "audio") suffixParts.push("audio");
+        if (outKind === "gif") suffixParts.push("gif");
+        if (outKind === "mp4" || outKind === "webm") {
+          if (resPreset !== "keep") suffixParts.push(`${targetW}x${targetH}`);
+          if (tStart || tEnd) suffixParts.push("trim");
+        } else if (tStart || tEnd) {
+          suffixParts.push("trim");
+        }
+        const suffix = suffixParts.length ? "_" + suffixParts.join("_") : "_out";
+        outName = base + suffix + "." + outExt;
+      }
+
+      downloadBlob(blob, outName);
+      log(`Downloaded: ${outName}`);
+    }
+
+    $("runBtn").addEventListener("click", async () => {
+      if (!selectedFiles.length) return;
+
+      $("runBtn").disabled = true;
+      $("stopBtn").disabled = false;
+      logEl.textContent = "";
+
+      try {
+        await ensureLoaded();
+
+        const mode = $("batchMode").value;
+        const queue = (mode === "first") ? [selectedFiles[0]] : selectedFiles.slice();
+
+        qCountEl.textContent = String(queue.length);
+
+        for (let i = 0; i < queue.length; i++) {
+          if (stopRequested) {
+            log("Stopped by user.");
+            break;
+          }
+          const f = queue[i];
+          curNameEl.textContent = f.name;
+          statusEl.textContent = `(${i+1}/${queue.length}) Working…`;
+          await runOne(f);
+        }
+
+        if (!stopRequested) statusEl.textContent = "Done.";
+        stageEl.textContent = stopRequested ? "stopped" : "done";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Error.";
+        stageEl.textContent = "error";
+        log("ERROR: " + (err?.message || err));
+      } finally {
+        $("runBtn").disabled = (selectedFiles.length === 0);
+        $("stopBtn").disabled = true;
+        curNameEl.textContent = "—";
+        progEl.value = 0;
+        stopRequested = false;
+      }
+    });
+
+    // Initialize
+    updateUIForOutKind();
+    updateUIForResPreset();
+  </script>
+
+  <script>
+    // If opened as file://, origin is "null" and FFmpeg.wasm worker loads will fail.
+    (function(){
+      try {
+        if (location.protocol === "file:") {
+          var el = document.getElementById("fileOriginWarning");
+          if (el) el.style.display = "";
+        }
+      } catch (e) {}
+    })();
+  </script>
+
+</body>
+</html>
