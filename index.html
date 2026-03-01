@@ -217,12 +217,74 @@
 
   <h3 style="margin:14px 0 8px">Log</h3>
   <div id="log"></div>
-
-  <!-- UMD builds: friendlier for local file:// usage -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
-
+  <!-- FFmpeg.wasm loader: local-first, then jsDelivr, then unpkg -->
   <script>
+    (function(){
+      const sources = [
+        // Local (recommended for GitHub Pages reliability)
+        { ffmpeg: "./vendor/ffmpeg.js", util: "./vendor/ffmpeg-util.js", core: "./vendor/ffmpeg-core.js", wasm: "./vendor/ffmpeg-core.wasm", label: "local ./vendor" },
+        // jsDelivr CDN
+        { ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
+          util:   "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js",
+          core:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+          wasm:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
+          label: "jsDelivr" },
+        // unpkg CDN (fallback)
+        { ffmpeg: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
+          util:   "https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js",
+          core:   "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+          wasm:   "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
+          label: "unpkg" },
+      ];
+
+      function loadScript(src){
+        return new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = src;
+          s.async = true;
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("Failed to load " + src));
+          document.head.appendChild(s);
+        });
+      }
+
+      // Expose chosen core URLs so the app uses matching core/wasm.
+      window.__FFMPEG_SOURCES__ = sources;
+      window.__FFMPEG_CHOSEN__ = null;
+
+      async function trySource(i){
+        const src = sources[i];
+        // Reset globals if prior attempt partially loaded
+        try { delete window.FFmpegWASM; } catch(e){}
+        try { delete window.FFmpegUtil; } catch(e){}
+        try {
+          await loadScript(src.ffmpeg);
+          await loadScript(src.util);
+
+          if (!window.FFmpegWASM || !window.FFmpegUtil || !window.FFmpegWASM.FFmpeg || !window.FFmpegUtil.fetchFile) {
+            throw new Error("FFmpeg globals not available after loading from " + src.label);
+          }
+
+          window.__FFMPEG_CHOSEN__ = src;
+          return true;
+        } catch (e) {
+          // console only; UI will show later if ffmpeg missing
+          console.warn("[FFmpeg loader]", e.message || e);
+          return false;
+        }
+      }
+
+      // Kick off immediately; app code will wait until DOMContentLoaded anyway
+      window.__ffmpegReadyPromise__ = (async () => {
+        for (let i=0; i<sources.length; i++){
+          const ok = await trySource(i);
+          if (ok) return sources[i];
+        }
+        throw new Error("Failed to load FFmpeg from all sources (local, jsDelivr, unpkg).");
+      })();
+    })();
+  </script>
+<script>
     const $ = (id) => document.getElementById(id);
     const logEl = $("log");
     const statusEl = $("status");
@@ -249,6 +311,7 @@
 
     async function ensureLoaded() {
       if (loaded) return;
+      await ensureFFmpegGlobals();
       stageEl.textContent = "loading";
       statusEl.textContent = "Loading ffmpeg core (first run)…";
       log("Loading ffmpeg…");
@@ -448,7 +511,7 @@
 
       stageEl.textContent = "read";
       statusEl.textContent = `Reading ${file.name}…`;
-      await ffmpeg.writeFile(inName, await fetchFile(file));
+      await ffmpeg.writeFile(inName, await fetchFileFn(file));
 
       // Common args: put -ss before -i for speed when possible (but can be less accurate). We'll do after -i for reliability.
       const trimArgs = [];
