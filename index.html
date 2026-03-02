@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Local Video Toolkit (Debug Build)</title>
+  <title>Local Video Toolkit (Debug + Smart Fallback)</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 18px; max-width: 1100px; }
@@ -23,25 +23,26 @@
     .pill { display:inline-flex; gap:8px; align-items:center; padding:6px 10px; border:1px solid rgba(127,127,127,.35); border-radius:999px; margin:6px 6px 0 0; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .warn { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,165,0,.6); background: rgba(255,165,0,.12); }
-    #consoleBox { white-space: pre-wrap; background: rgba(127,127,127,.12); padding: 10px; border-radius: 12px; max-height: 240px; overflow:auto; }
-    #log { white-space: pre-wrap; background: rgba(127,127,127,.12); padding: 10px; border-radius: 12px; max-height: 240px; overflow:auto; }
+    #consoleBox, #log, #netBox { white-space: pre-wrap; background: rgba(127,127,127,.12); padding: 10px; border-radius: 12px; max-height: 240px; overflow:auto; }
     details summary { cursor:pointer; }
+    .ok { color: inherit; }
   </style>
 </head>
 <body>
-  <h1>Local Video Toolkit — Debug Build</h1>
+  <h1>Local Video Toolkit — Debug + Smart Fallback</h1>
   <div class="muted">
-    This build shows captured console errors in-page. It loads FFmpeg.wasm locally if available, else tries jsDelivr, then unpkg.
+    Captures console errors in-page and will fall back per-asset (ffmpeg wrapper vs core/wasm) so a missing local WASM won't stall you.
   </div>
 
   <div id="originWarn" class="warn" style="display:none; margin-top:10px">
     <strong>You're opening this via <span class="mono">file://</span> (origin is <span class="mono">null</span>).</strong><br>
-    FFmpeg.wasm uses Web Workers; browsers block worker scripts on a null origin. Use <strong>GitHub Pages (https://…)</strong> or serve locally via <span class="mono">http://localhost</span>.
+    FFmpeg.wasm uses Web Workers; browsers block worker scripts on a null origin. Use <strong>GitHub Pages (https://…)</strong> or <span class="mono">http://localhost</span>.
   </div>
 
   <div class="row">
     <span class="pill"><span class="muted">Origin</span> <span id="origin" class="mono"></span></span>
-    <span class="pill"><span class="muted">Chosen source</span> <span id="chosen" class="mono">—</span></span>
+    <span class="pill"><span class="muted">Wrapper</span> <span id="wrapSrc" class="mono">—</span></span>
+    <span class="pill"><span class="muted">Core/WASM</span> <span id="coreSrc" class="mono">—</span></span>
     <span class="pill"><span class="muted">FFmpeg loaded</span> <span id="loaded" class="mono">no</span></span>
   </div>
 
@@ -67,7 +68,7 @@
         </select>
       </label>
 
-      <label id="resWrap">
+      <label>
         Resolution
         <select id="resPreset">
           <option value="keep" selected>Keep original</option>
@@ -89,11 +90,11 @@
         </select>
       </label>
 
-      <label id="crfWrap">
+      <label>
         CRF <input id="crf" type="number" min="16" max="35" step="1" value="23" />
       </label>
 
-      <label id="presetWrap">
+      <label>
         Preset
         <select id="preset">
           <option value="ultrafast">ultrafast</option>
@@ -107,7 +108,7 @@
     <div class="row">
       <label>Start <input id="tStart" type="text" placeholder="00:00:05" /></label>
       <label>End <input id="tEnd" type="text" placeholder="00:00:20" /></label>
-      <span class="muted" id="runWhy"></span>
+      <span class="muted" id="runWhy">Select at least one file to enable Run.</span>
     </div>
 
     <div class="row">
@@ -128,6 +129,15 @@
   </details>
 
   <details style="margin-top:10px">
+    <summary><strong>Network checks</strong></summary>
+    <div class="row">
+      <button id="rerunNet" type="button">Re-run network checks</button>
+      <span class="muted">Shows whether your local vendor core/wasm is actually reachable.</span>
+    </div>
+    <div id="netBox"></div>
+  </details>
+
+  <details style="margin-top:10px">
     <summary><strong>FFmpeg log</strong></summary>
     <div class="row">
       <button id="clearLog" type="button">Clear ffmpeg log</button>
@@ -142,10 +152,15 @@
     const statusEl = $("status");
     const progEl = $("prog");
     const runWhy = $("runWhy");
+    const netBox = $("netBox");
 
     function appendConsole(line) {
-      consoleBox.textContent += line + "\n";
+      consoleBox.textContent += line + "\\n";
       consoleBox.scrollTop = consoleBox.scrollHeight;
+    }
+    function net(line){
+      netBox.textContent += line + "\\n";
+      netBox.scrollTop = netBox.scrollHeight;
     }
 
     // Capture console + errors
@@ -174,9 +189,10 @@
     });
     $("clearConsole").addEventListener("click", () => consoleBox.textContent = "");
     $("clearLog").addEventListener("click", () => logEl.textContent = "");
+    $("rerunNet").addEventListener("click", () => { netBox.textContent=""; runNetChecks(); });
 
     function log(msg){
-      logEl.textContent += msg + "\n";
+      logEl.textContent += msg + "\\n";
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -184,17 +200,19 @@
     $("origin").textContent = location.origin + " (" + location.protocol + ")";
     if (location.protocol === "file:" || location.origin === "null") $("originWarn").style.display = "";
 
-    // ---- FFmpeg loader (no util dependency) ----
-    const sources = [
-      { ffmpeg: "./vendor/ffmpeg.js", core: "./vendor/ffmpeg-core.js", wasm: "./vendor/ffmpeg-core.wasm", label: "local ./vendor" },
-      { ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
-        core:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-        wasm:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-        label: "jsDelivr" },
-      { ffmpeg: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
-        core:   "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-        wasm:   "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-        label: "unpkg" },
+    // ---- Sources (wrapper and core/wasm chosen independently) ----
+    const WRAPPER_SOURCES = [
+      { ffmpeg: "./vendor/ffmpeg.js", label: "local ./vendor" },
+      { ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js", label: "jsDelivr" },
+      { ffmpeg: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js", label: "unpkg" },
+    ];
+
+    const CORE_SOURCES = [
+      { core: "./vendor/ffmpeg-core.js", wasm: "./vendor/ffmpeg-core.wasm", label: "local ./vendor" },
+      { core: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+        wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm", label: "jsDelivr" },
+      { core: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+        wasm: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm", label: "unpkg" },
     ];
 
     function loadScript(src){
@@ -208,37 +226,95 @@
       });
     }
 
-    let chosen = null;
-    async function chooseSource(){
-      for (const src of sources){
+    async function probe(url){
+      // Use a ranged request for the WASM to avoid downloading 30MB just to test existence.
+      const isWasm = url.endsWith(".wasm");
+      const opts = isWasm ? { method: "GET", headers: { "Range": "bytes=0-0" }, cache: "no-store" } : { method: "GET", cache: "no-store" };
+      try{
+        const r = await fetch(url, opts);
+        return { ok: r.ok, status: r.status };
+      } catch (e){
+        return { ok: false, status: "fetch failed" };
+      }
+    }
+
+    let chosenWrapper = null;
+    let chosenCore = null;
+
+    async function chooseWrapper(){
+      for (const src of WRAPPER_SOURCES){
         try{
           await loadScript(src.ffmpeg);
           if (!window.FFmpegWASM?.FFmpeg) throw new Error("FFmpeg globals missing after " + src.label);
-          chosen = src;
-          $("chosen").textContent = src.label;
-          console.log("Chosen source:", src.label);
+          chosenWrapper = src;
+          $("wrapSrc").textContent = src.label;
+          console.log("Wrapper chosen:", src.label);
           return src;
         } catch (e){
-          console.warn("Source failed:", src.label, e.message || e);
+          console.warn("Wrapper source failed:", src.label, e.message || e);
         }
       }
-      throw new Error("All FFmpeg sources failed (vendor/jsDelivr/unpkg).");
+      throw new Error("All wrapper sources failed (vendor/jsDelivr/unpkg).");
     }
 
+    async function chooseCore(){
+      // Pick the first source where BOTH core.js and core.wasm are reachable.
+      for (const src of CORE_SOURCES){
+        const coreProbe = await probe(src.core);
+        const wasmProbe = await probe(src.wasm);
+        net(`${src.label}: core ${coreProbe.ok ? "OK" : "FAIL"} (${coreProbe.status}), wasm ${wasmProbe.ok ? "OK" : "FAIL"} (${wasmProbe.status})`);
+        if (coreProbe.ok && wasmProbe.ok){
+          chosenCore = src;
+          $("coreSrc").textContent = src.label;
+          console.log("Core/WASM chosen:", src.label);
+          return src;
+        }
+      }
+      // If local is missing (likely), you’ll land here but still proceed: prefer jsDelivr then unpkg even if probes failed (sometimes Range is blocked).
+      console.warn("No core source passed probe. Falling back to jsDelivr.");
+      chosenCore = CORE_SOURCES[1];
+      $("coreSrc").textContent = chosenCore.label + " (forced)";
+      return chosenCore;
+    }
+
+    async function runNetChecks(){
+      net("Running probes (core and wasm)…");
+      for (const src of CORE_SOURCES){
+        const coreProbe = await probe(src.core);
+        const wasmProbe = await probe(src.wasm);
+        net(`${src.label}: core ${coreProbe.ok ? "OK" : "FAIL"} (${coreProbe.status}), wasm ${wasmProbe.ok ? "OK" : "FAIL"} (${wasmProbe.status})`);
+      }
+    }
+
+    // Kick off net checks (informational)
+    runNetChecks();
+
+    // ---- FFmpeg runtime ----
     let ffmpeg = null;
     let loaded = false;
     let stopRequested = false;
 
     async function ensureLoaded(){
       if (loaded) return;
-      if (!chosen) await chooseSource();
+
+      statusEl.textContent = "Loading FFmpeg wrapper…";
+      if (!chosenWrapper) await chooseWrapper();
+
+      statusEl.textContent = "Choosing core/WASM…";
+      if (!chosenCore) await chooseCore();
+
       const FF = window.FFmpegWASM.FFmpeg;
       ffmpeg = new FF();
 
       statusEl.textContent = "Loading ffmpeg core…";
-      log("Loading ffmpeg core from: " + chosen.label);
+      log("Loading core from: " + chosenCore.label);
+      log("coreURL: " + chosenCore.core);
+      log("wasmURL: " + chosenCore.wasm);
 
-      await ffmpeg.load({ coreURL: chosen.core, wasmURL: chosen.wasm });
+      // Timeout guard: if load hangs, surface it.
+      const loadPromise = ffmpeg.load({ coreURL: chosenCore.core, wasmURL: chosenCore.wasm });
+      const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("ffmpeg.load() timed out (core/wasm fetch stalled). Likely missing local wasm or blocked download.)")), 45000);
+      await Promise.race([loadPromise, timeoutPromise]);
 
       ffmpeg.on("log", ({ message }) => log(message));
       ffmpeg.on("progress", ({ ratio }) => { progEl.value = Math.max(0, Math.min(1, ratio || 0)); });
@@ -257,9 +333,9 @@
       if (!t) return null;
       const s = String(t).trim();
       if (!s) return null;
-      if (/^\d+(\.\d+)?$/.test(s)) return s;
-      if (/^\d{1,2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) return s;
-      if (/^\d{1,2}:\d{2}(\.\d+)?$/.test(s)) return "00:" + s;
+      if (/^\\d+(\\.\\d+)?$/.test(s)) return s;
+      if (/^\\d{1,2}:\\d{2}:\\d{2}(\\.\\d+)?$/.test(s)) return s;
+      if (/^\\d{1,2}:\\d{2}(\\.\\d+)?$/.test(s)) return "00:" + s;
       throw new Error("Bad time format: " + s);
     }
 
@@ -280,12 +356,11 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }
 
-    // ---- UI / selection ----
+    // ---- UI ----
     let selectedFiles = [];
     function humanMB(n){ return (n/1024/1024).toFixed(1) + " MB"; }
 
     function refreshRunEnabled(){
-      // Enable if at least one file is selected. FFmpeg can fail later; we’ll show errors.
       const hasFiles = selectedFiles.length > 0;
       $("runBtn").disabled = !hasFiles;
       runWhy.textContent = hasFiles ? "" : "Select at least one file to enable Run.";
@@ -347,13 +422,11 @@
 
     $("stopBtn").addEventListener("click", () => { stopRequested = true; statusEl.textContent = "Stop requested…"; });
 
-    // ---- Run ----
     $("runBtn").addEventListener("click", async () => {
       if (!selectedFiles.length) return;
 
       $("runBtn").disabled = true;
       $("stopBtn").disabled = false;
-      statusEl.textContent = "";
 
       try{
         await ensureLoaded();
@@ -376,7 +449,6 @@
           statusEl.textContent = `(${i+1}/${selectedFiles.length}) Reading ${f.name}…`;
           progEl.value = 0;
 
-          // Cleanup
           try { await ffmpeg.deleteFile("input"); } catch {}
           for (const fn of ["out.mp4","out.webm","out.gif","out.m4a","out.wav"]) { try { await ffmpeg.deleteFile(fn); } catch {} }
 
@@ -412,23 +484,21 @@
           const data = await ffmpeg.readFile(outName);
           const blob = new Blob([data.buffer], { type: mime });
           const base = f.name.replace(/\.[^.]+$/, "");
-          downloadBlob(blob, `${base}_${ext}.${ext}`);
+          downloadBlob(blob, `${base}_out.${ext}`);
         }
 
         statusEl.textContent = stopRequested ? "Stopped." : "Done.";
       } catch (e){
         console.error(e);
-        statusEl.textContent = "Error (see console below).";
+        statusEl.textContent = "Error (see console / network checks).";
       } finally {
         $("stopBtn").disabled = true;
-        // Re-enable if still has files
         $("runBtn").disabled = selectedFiles.length === 0;
         stopRequested = false;
         progEl.value = 0;
       }
     });
 
-    // Initial
     refreshRunEnabled();
   </script>
 </body>
