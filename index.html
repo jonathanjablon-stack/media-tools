@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Local Video Toolkit (Debug + Smart Fallback)</title>
+  <title>Local Video Toolkit (Debug + Retry Matrix)</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 18px; max-width: 1100px; }
@@ -25,13 +25,12 @@
     .warn { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,165,0,.6); background: rgba(255,165,0,.12); }
     #consoleBox, #log, #netBox { white-space: pre-wrap; background: rgba(127,127,127,.12); padding: 10px; border-radius: 12px; max-height: 240px; overflow:auto; }
     details summary { cursor:pointer; }
-    .ok { color: inherit; }
   </style>
 </head>
 <body>
-  <h1>Local Video Toolkit — Debug + Smart Fallback</h1>
+  <h1>Local Video Toolkit — Debug + Retry Matrix</h1>
   <div class="muted">
-    Captures console errors in-page and will fall back per-asset (ffmpeg wrapper vs core/wasm) so a missing local WASM won't stall you.
+    If <span class="mono">ffmpeg.load()</span> hangs (common with version mismatches or blocked WASM downloads), this build automatically retries with different wrapper/core sources and shows everything in-page.
   </div>
 
   <div id="originWarn" class="warn" style="display:none; margin-top:10px">
@@ -50,6 +49,7 @@
     <div class="row">
       <input id="picker" type="file" accept="video/*,audio/*" multiple />
       <button id="clearBtn" type="button">Clear</button>
+      <button id="resetBtn" type="button">Reset FFmpeg</button>
       <span id="summary" class="muted"></span>
     </div>
     <div id="drop" tabindex="0">Drop video/audio files here</div>
@@ -108,6 +108,7 @@
     <div class="row">
       <label>Start <input id="tStart" type="text" placeholder="00:00:05" /></label>
       <label>End <input id="tEnd" type="text" placeholder="00:00:20" /></label>
+      <label>Load timeout (sec) <input id="timeoutSec" type="number" min="15" step="5" value="120" /></label>
       <span class="muted" id="runWhy">Select at least one file to enable Run.</span>
     </div>
 
@@ -132,7 +133,7 @@
     <summary><strong>Network checks</strong></summary>
     <div class="row">
       <button id="rerunNet" type="button">Re-run network checks</button>
-      <span class="muted">Shows whether your local vendor core/wasm is actually reachable.</span>
+      <span class="muted">If WASM fetch is blocked or painfully slow, you’ll see it here.</span>
     </div>
     <div id="netBox"></div>
   </details>
@@ -163,7 +164,6 @@
       netBox.scrollTop = netBox.scrollHeight;
     }
 
-    // Capture console + errors
     (function(){
       const orig = {
         log: console.log.bind(console),
@@ -196,11 +196,9 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // Origin info
     $("origin").textContent = location.origin + " (" + location.protocol + ")";
     if (location.protocol === "file:" || location.origin === "null") $("originWarn").style.display = "";
 
-    // ---- Sources (wrapper and core/wasm chosen independently) ----
     const WRAPPER_SOURCES = [
       { ffmpeg: "./vendor/ffmpeg.js", label: "local ./vendor" },
       { ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js", label: "jsDelivr" },
@@ -208,6 +206,7 @@
     ];
 
     const CORE_SOURCES = [
+      // local core is fine to include, but local wasm is usually missing (GitHub size limit)
       { core: "./vendor/ffmpeg-core.js", wasm: "./vendor/ffmpeg-core.wasm", label: "local ./vendor" },
       { core: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
         wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm", label: "jsDelivr" },
@@ -227,7 +226,6 @@
     }
 
     async function probe(url){
-      // Use a ranged request for the WASM to avoid downloading 30MB just to test existence.
       const isWasm = url.endsWith(".wasm");
       const opts = isWasm ? { method: "GET", headers: { "Range": "bytes=0-0" }, cache: "no-store" } : { method: "GET", cache: "no-store" };
       try{
@@ -238,45 +236,6 @@
       }
     }
 
-    let chosenWrapper = null;
-    let chosenCore = null;
-
-    async function chooseWrapper(){
-      for (const src of WRAPPER_SOURCES){
-        try{
-          await loadScript(src.ffmpeg);
-          if (!window.FFmpegWASM?.FFmpeg) throw new Error("FFmpeg globals missing after " + src.label);
-          chosenWrapper = src;
-          $("wrapSrc").textContent = src.label;
-          console.log("Wrapper chosen:", src.label);
-          return src;
-        } catch (e){
-          console.warn("Wrapper source failed:", src.label, e.message || e);
-        }
-      }
-      throw new Error("All wrapper sources failed (vendor/jsDelivr/unpkg).");
-    }
-
-    async function chooseCore(){
-      // Pick the first source where BOTH core.js and core.wasm are reachable.
-      for (const src of CORE_SOURCES){
-        const coreProbe = await probe(src.core);
-        const wasmProbe = await probe(src.wasm);
-        net(`${src.label}: core ${coreProbe.ok ? "OK" : "FAIL"} (${coreProbe.status}), wasm ${wasmProbe.ok ? "OK" : "FAIL"} (${wasmProbe.status})`);
-        if (coreProbe.ok && wasmProbe.ok){
-          chosenCore = src;
-          $("coreSrc").textContent = src.label;
-          console.log("Core/WASM chosen:", src.label);
-          return src;
-        }
-      }
-      // If local is missing (likely), you’ll land here but still proceed: prefer jsDelivr then unpkg even if probes failed (sometimes Range is blocked).
-      console.warn("No core source passed probe. Falling back to jsDelivr.");
-      chosenCore = CORE_SOURCES[1];
-      $("coreSrc").textContent = chosenCore.label + " (forced)";
-      return chosenCore;
-    }
-
     async function runNetChecks(){
       net("Running probes (core and wasm)…");
       for (const src of CORE_SOURCES){
@@ -285,43 +244,94 @@
         net(`${src.label}: core ${coreProbe.ok ? "OK" : "FAIL"} (${coreProbe.status}), wasm ${wasmProbe.ok ? "OK" : "FAIL"} (${wasmProbe.status})`);
       }
     }
-
-    // Kick off net checks (informational)
     runNetChecks();
 
-    // ---- FFmpeg runtime ----
+    // FFmpeg state
     let ffmpeg = null;
     let loaded = false;
     let stopRequested = false;
+    let chosenWrapper = null;
+    let chosenCore = null;
+
+    function resetFFmpeg(){
+      ffmpeg = null;
+      loaded = false;
+      chosenWrapper = null;
+      chosenCore = null;
+      $("loaded").textContent = "no";
+      $("wrapSrc").textContent = "—";
+      $("coreSrc").textContent = "—";
+      statusEl.textContent = "Reset.";
+      log("Reset FFmpeg state.");
+    }
+    $("resetBtn").addEventListener("click", resetFFmpeg);
+
+    async function loadWithTimeout(promise, ms){
+      const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("ffmpeg.load() timed out after " + Math.round(ms/1000) + "s")), ms));
+      return Promise.race([promise, timeoutPromise]);
+    }
 
     async function ensureLoaded(){
       if (loaded) return;
 
-      statusEl.textContent = "Loading FFmpeg wrapper…";
-      if (!chosenWrapper) await chooseWrapper();
+      const timeoutMs = Math.max(15000, (parseInt($("timeoutSec").value || "120", 10) * 1000));
 
-      statusEl.textContent = "Choosing core/WASM…";
-      if (!chosenCore) await chooseCore();
+      // Build a retry matrix:
+      // - Wrapper: local -> jsDelivr -> unpkg
+      // - Core/WASM: jsDelivr -> unpkg (skip local by default unless it probes OK)
+      const coreOrder = [];
+      // If local core+wasm exists, include it first
+      const localCore = CORE_SOURCES[0];
+      const localProbes = await Promise.all([probe(localCore.core), probe(localCore.wasm)]);
+      if (localProbes[0].ok && localProbes[1].ok) coreOrder.push(localCore);
+      coreOrder.push(CORE_SOURCES[1], CORE_SOURCES[2]);
 
-      const FF = window.FFmpegWASM.FFmpeg;
-      ffmpeg = new FF();
+      for (const w of WRAPPER_SOURCES){
+        // Load wrapper fresh in its own attempt by busting cache key via querystring
+        const ffUrl = w.ffmpeg + (w.ffmpeg.includes("?") ? "&" : "?") + "v=" + Date.now();
+        statusEl.textContent = "Loading wrapper: " + w.label;
+        try{
+          await loadScript(ffUrl);
+          if (!window.FFmpegWASM?.FFmpeg) throw new Error("FFmpeg globals missing after " + w.label);
+        } catch (e){
+          console.warn("Wrapper failed:", w.label, e.message || e);
+          continue;
+        }
 
-      statusEl.textContent = "Loading ffmpeg core…";
-      log("Loading core from: " + chosenCore.label);
-      log("coreURL: " + chosenCore.core);
-      log("wasmURL: " + chosenCore.wasm);
+        for (const c of coreOrder){
+          try{
+            statusEl.textContent = `Loading core: ${c.label} (timeout ${Math.round(timeoutMs/1000)}s)…`;
+            $("wrapSrc").textContent = w.label;
+            $("coreSrc").textContent = c.label;
 
-      // Timeout guard: if load hangs, surface it.
-      const loadPromise = ffmpeg.load({ coreURL: chosenCore.core, wasmURL: chosenCore.wasm });
-      const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("ffmpeg.load() timed out (core/wasm fetch stalled). Likely missing local wasm or blocked download.")), 45000));
-      await Promise.race([loadPromise, timeoutPromise]);
+            const FF = window.FFmpegWASM.FFmpeg;
+            ffmpeg = new FF();
 
-      ffmpeg.on("log", ({ message }) => log(message));
-      ffmpeg.on("progress", ({ ratio }) => { progEl.value = Math.max(0, Math.min(1, ratio || 0)); });
+            log("Attempt wrapper=" + w.label + " core=" + c.label);
+            log("coreURL: " + c.core);
+            log("wasmURL: " + c.wasm);
 
-      loaded = true;
-      $("loaded").textContent = "yes";
-      statusEl.textContent = "Ready.";
+            await loadWithTimeout(ffmpeg.load({ coreURL: c.core, wasmURL: c.wasm }), timeoutMs);
+
+            ffmpeg.on("log", ({ message }) => log(message));
+            ffmpeg.on("progress", ({ ratio }) => { progEl.value = Math.max(0, Math.min(1, ratio || 0)); });
+
+            loaded = true;
+            chosenWrapper = w;
+            chosenCore = c;
+            $("loaded").textContent = "yes";
+            statusEl.textContent = "Ready.";
+            console.log("Loaded successfully with:", w.label, c.label);
+            return;
+          } catch (e){
+            console.warn("Load attempt failed:", w.label, c.label, e.message || e);
+            log("Load failed: " + w.label + " + " + c.label + " => " + (e.message || e));
+            // try next combination
+          }
+        }
+      }
+
+      throw new Error("All wrapper/core combinations failed. See console + network checks.");
     }
 
     async function fileToU8(file){
@@ -356,7 +366,7 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }
 
-    // ---- UI ----
+    // UI
     let selectedFiles = [];
     function humanMB(n){ return (n/1024/1024).toFixed(1) + " MB"; }
 
@@ -483,7 +493,7 @@
           statusEl.textContent = "Preparing download…";
           const data = await ffmpeg.readFile(outName);
           const blob = new Blob([data.buffer], { type: mime });
-          const base = f.name.replace(/\.[^.]+$/, "");
+          const base = f.name.replace(/\\.[^.]+$/, "");
           downloadBlob(blob, `${base}_out.${ext}`);
         }
 
