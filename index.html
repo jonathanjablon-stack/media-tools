@@ -313,7 +313,7 @@
 
       // Timeout guard: if load hangs, surface it.
       const loadPromise = ffmpeg.load({ coreURL: chosenCore.core, wasmURL: chosenCore.wasm });
-      const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("ffmpeg.load() timed out (core/wasm fetch stalled). Likely missing local wasm or blocked download.)")), 45000);
+      const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("ffmpeg.load() timed out (core/wasm fetch stalled). Likely missing local wasm or blocked download.")), 45000));
       await Promise.race([loadPromise, timeoutPromise]);
 
       ffmpeg.on("log", ({ message }) => log(message));
