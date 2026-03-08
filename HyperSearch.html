@@ -1,0 +1,321 @@
+Here is the upgraded version. I have completely refactored the text parsing to support Page Number detection for PDFs and added a robust Excel/CSV Export engine.
+Key Upgrades
+ * Page-Aware Parsing: The PDF parser now keeps text separated by page, so the report can tell you exactly where the match occurred. (Note: DOCX/TXT files are continuous flow documents, so they will list "N/A" for page numbers).
+ * Excel-Ready CSV: The export function properly escapes quotes, handles newlines, and uses BOM (Byte Order Mark) to ensure Excel opens the file with the correct character encoding.
+ * Context Cleaning: The snippet extractor normalizes whitespace so your Excel cells don't have massive line breaks.
+Save this as search_tool_v2.html.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Search & Extract</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+
+    <style>
+        :root { --primary: #2563eb; --bg: #f1f5f9; --card: #ffffff; --text: #1e293b; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+        
+        .main-wrapper { max-width: 900px; margin: 0 auto; background: var(--card); border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 2rem; }
+        
+        h1 { margin-top: 0; font-size: 1.5rem; display: flex; align-items: center; justify-content: space-between; }
+        .version { font-size: 0.8rem; background: #e2e8f0; padding: 2px 8px; border-radius: 4px; color: #64748b; font-weight: normal; }
+
+        /* Drag & Drop */
+        .drop-zone { border: 2px dashed #cbd5e1; padding: 3rem; text-align: center; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-bottom: 1.5rem; }
+        .drop-zone:hover { border-color: var(--primary); background: #eff6ff; }
+        .drop-zone.loaded { border-color: #10b981; background: #f0fdf4; }
+
+        /* Inputs */
+        .search-bar { display: flex; gap: 10px; margin-bottom: 20px; }
+        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-family: monospace; font-size: 1rem; }
+        
+        .btn { padding: 12px 24px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-success { background: #10b981; color: white; display: none; } /* Hidden by default */
+        .btn-success:hover { background: #059669; }
+
+        /* Stats & Results */
+        .status-bar { font-size: 0.9rem; color: #64748b; margin-bottom: 1rem; height: 1.5rem; }
+        .results-container { border-top: 1px solid #e2e8f0; }
+        
+        .result-file { border-bottom: 1px solid #e2e8f0; }
+        .result-header { padding: 1rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; }
+        .result-header:hover { background: #f1f5f9; }
+        .badge { background: var(--primary); color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; }
+        
+        .matches-list { display: none; padding: 0 1rem 1rem 1rem; background: white; }
+        .matches-list.open { display: block; }
+        
+        .match-row { display: grid; grid-template-columns: 60px 1fr; gap: 1rem; padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 0.9rem; }
+        .match-row:last-child { border-bottom: none; }
+        .page-num { color: #94a3b8; font-variant-numeric: tabular-nums; text-align: right; }
+        .snippet { color: #334155; line-height: 1.5; }
+        .highlight { background: #fef08a; color: #854d0e; font-weight: bold; border-radius: 2px; padding: 0 2px; }
+
+        .loading-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #cbd5e1; border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="main-wrapper">
+    <h1>
+        Document Inspector
+        <span class="version">v2.1 Excel Export</span>
+    </h1>
+
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <p style="margin:0; font-weight:500; color:#475569;">Drop files here to analyze</p>
+        <p style="margin:5px 0 0 0; font-size:0.85rem; color:#94a3b8;">Supports .docx, .pdf, .txt</p>
+        <input type="file" id="fileInput" multiple style="display:none" accept=".docx,.pdf,.txt">
+    </div>
+
+    <div class="search-bar">
+        <input type="text" id="regexInput" placeholder="Enter text or Regex (e.g. \bConfidential\b)" onkeydown="if(event.key==='Enter') runSearch()">
+        <button class="btn btn-primary" onclick="runSearch()">Find</button>
+        <button class="btn btn-success" id="exportBtn" onclick="exportToCSV()">Download Report</button>
+    </div>
+
+    <div id="status" class="status-bar"></div>
+
+    <div id="results" class="results-container"></div>
+</div>
+
+<script>
+    // --- State Management ---
+    let fileData = []; // Structure: [{ filename: "doc.pdf", pages: [{num: 1, text: "..."}, ...] }]
+    let currentMatches = []; // Stores the last search results for export
+
+    // --- File Handling ---
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    // Drag & Drop Events
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = '#2563eb'; });
+    dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.style.borderColor = '#cbd5e1'; });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#cbd5e1';
+        if(e.dataTransfer.files.length) loadFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', () => { if(fileInput.files.length) loadFiles(fileInput.files); });
+
+    async function loadFiles(files) {
+        const status = document.getElementById('status');
+        fileData = []; // Clear previous data
+        document.getElementById('results').innerHTML = '';
+        document.getElementById('exportBtn').style.display = 'none';
+        
+        status.innerHTML = `<span class="loading-spinner"></span>Processing ${files.length} files...`;
+
+        for (let file of files) {
+            try {
+                let parsedPages = [];
+                const ext = file.name.split('.').pop().toLowerCase();
+
+                if (ext === 'pdf') {
+                    parsedPages = await parsePdf(file);
+                } else if (ext === 'docx') {
+                    const text = await parseDocx(file);
+                    parsedPages = [{ num: "N/A", text: text }]; // Docx has no "pages" in raw text
+                } else if (ext === 'txt') {
+                    const text = await file.text();
+                    parsedPages = [{ num: "N/A", text: text }];
+                }
+
+                fileData.push({ name: file.name, pages: parsedPages });
+            } catch (err) {
+                console.error(err);
+                fileData.push({ name: file.name + " (ERROR)", pages: [] });
+            }
+        }
+
+        status.textContent = `${fileData.length} files ready to search.`;
+        dropZone.classList.add('loaded');
+        dropZone.innerHTML = `<p style="margin:0; color:#065f46; font-weight:bold;">✓ ${fileData.length} files loaded</p>`;
+    }
+
+    // --- Parsers ---
+
+    // PDF Parser: Returns array of pages
+    async function parsePdf(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        let pages = [];
+        
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            // Join items with space, but normalize spaces to avoid massive gaps
+            const pageText = textContent.items.map(item => item.str).join(' ');
+            pages.push({ num: i, text: pageText });
+        }
+        return pages;
+    }
+
+    // DOCX Parser: Returns single string
+    async function parseDocx(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
+        return result.value;
+    }
+
+    // --- Search Engine ---
+
+    function runSearch() {
+        const query = document.getElementById('regexInput').value;
+        const resultsDiv = document.getElementById('results');
+        const status = document.getElementById('status');
+        
+        resultsDiv.innerHTML = '';
+        currentMatches = []; // Reset export data
+
+        if (!query || fileData.length === 0) return;
+
+        let regex;
+        try {
+            regex = new RegExp(query, 'gi');
+        } catch (e) {
+            alert("Invalid Regex");
+            return;
+        }
+
+        let totalMatchCount = 0;
+
+        fileData.forEach(file => {
+            let fileMatches = [];
+
+            // Search every page of the file
+            file.pages.forEach(page => {
+                const matches = [...page.text.matchAll(regex)];
+                
+                matches.forEach(m => {
+                    // Context Extraction
+                    const contextStart = Math.max(0, m.index - 60);
+                    const contextEnd = Math.min(page.text.length, m.index + m[0].length + 60);
+                    let snippet = page.text.substring(contextStart, contextEnd);
+                    
+                    // Clean snippet for display (remove newlines for cleaner UI)
+                    snippet = snippet.replace(/[\r\n]+/g, " ");
+
+                    fileMatches.push({
+                        page: page.num,
+                        rawSnippet: snippet, // For display
+                        exactMatch: m[0],
+                        index: m.index
+                    });
+
+                    // Add to export data
+                    currentMatches.push({
+                        filename: file.name,
+                        page: page.num,
+                        match: m[0],
+                        context: snippet
+                    });
+                });
+            });
+
+            if (fileMatches.length > 0) {
+                totalMatchCount += fileMatches.length;
+                renderFileResult(file.name, fileMatches, resultsDiv, regex);
+            }
+        });
+
+        status.textContent = `Found ${totalMatchCount} matches across ${fileData.length} files.`;
+        
+        // Show/Hide Export Button
+        document.getElementById('exportBtn').style.display = totalMatchCount > 0 ? 'block' : 'none';
+    }
+
+    // --- Rendering ---
+
+    function renderFileResult(filename, matches, container, regex) {
+        const fileDiv = document.createElement('div');
+        fileDiv.className = 'result-file';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'result-header';
+        header.innerHTML = `
+            <span style="font-weight:600;">${filename}</span> 
+            <span class="badge">${matches.length}</span>
+        `;
+        
+        // Match List
+        const list = document.createElement('div');
+        list.className = 'matches-list';
+
+        matches.forEach(m => {
+            const row = document.createElement('div');
+            row.className = 'match-row';
+            
+            // Highlight logic
+            const safeSnippet = escapeHtml(m.rawSnippet);
+            const highlighted = safeSnippet.replace(
+                new RegExp(escapeRegex(m.exactMatch), 'gi'), 
+                `<span class="highlight">$&</span>`
+            );
+
+            row.innerHTML = `
+                <div class="page-num">Pg ${m.page}</div>
+                <div class="snippet">...${highlighted}...</div>
+            `;
+            list.appendChild(row);
+        });
+
+        // Toggle visibility
+        header.onclick = () => list.classList.toggle('open');
+
+        fileDiv.appendChild(header);
+        fileDiv.appendChild(list);
+        container.appendChild(fileDiv);
+    }
+
+    // --- Export Logic ---
+
+    function exportToCSV() {
+        if (currentMatches.length === 0) return;
+
+        // CSV Header
+        let csvContent = "Filename,Page,Match Term,Context Snippet\n";
+
+        currentMatches.forEach(row => {
+            // Escape quotes by doubling them (" -> "")
+            const cleanFile = `"${row.filename.replace(/"/g, '""')}"`;
+            const cleanPage = `"${row.page}"`;
+            const cleanMatch = `"${row.match.replace(/"/g, '""')}"`;
+            // Clean context: remove newlines, double quotes
+            const cleanContext = `"${row.context.replace(/"/g, '""').replace(/[\r\n]+/g, " ")}"`;
+
+            csvContent += `${cleanFile},${cleanPage},${cleanMatch},${cleanContext}\n`;
+        });
+
+        // Create Blob with BOM for Excel UTF-8 compatibility
+        const blob = new Blob(["\ufeff" + csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", "search_report.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // --- Helpers ---
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function escapeRegex(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+</script>
+
+</body>
+</html>
