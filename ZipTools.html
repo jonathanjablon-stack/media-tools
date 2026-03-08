@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zip Filename Sanitizer (Fixed)</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        :root { --primary: #8b5cf6; --bg: #111827; --surface: #1f2937; --text: #f3f4f6; --border: #374151; --success: #10b981; }
+        body { font-family: sans-serif; background: var(--bg); color: var(--text); padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 800px; }
+        .upload-box { border: 2px dashed var(--border); padding: 40px; text-align: center; background: var(--surface); border-radius: 12px; cursor: pointer; margin-bottom: 20px; }
+        .controls { display: none; justify-content: space-between; padding: 15px; background: var(--surface); border-radius: 8px; margin-bottom: 15px; }
+        button { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .file-list { background: var(--surface); border-radius: 12px; overflow: hidden; display: none; }
+        .file-row { display: grid; grid-template-columns: 1fr 24px 1fr; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--border); align-items: center; }
+        .old-name { color: #ef4444; font-size: 0.9rem; word-break: break-all; }
+        input.new-name { background: #111827; border: 1px solid var(--border); color: var(--success); padding: 8px; border-radius: 4px; width: 100%; font-family: monospace; }
+        /* Highlight bad chars if user types them back in */
+        input.new-name:invalid { border-color: red; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="upload-box" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept=".zip" style="display: none" onchange="handleFile(this.files[0])">
+        <span style="font-size: 2rem">ðŸ“¦</span>
+        <h3>Select Zip File</h3>
+    </div>
+
+    <div class="controls" id="controls">
+        <div id="status-text">Loaded 0 files</div>
+        <button id="download-btn" onclick="processAndDownload()">Download Fixed Zip</button>
+    </div>
+
+    <div class="file-list" id="file-list"></div>
+</div>
+
+<script>
+    let originalZip = null;
+    let fileEntries = [];
+
+    async function handleFile(file) {
+        if (!file) return;
+        
+        // Reset
+        document.getElementById('file-list').innerHTML = '';
+        document.getElementById('controls').style.display = 'flex';
+        document.getElementById('file-list').style.display = 'block';
+        document.getElementById('status-text').innerText = 'Reading...';
+        fileEntries = [];
+
+        try {
+            originalZip = await JSZip.loadAsync(file);
+            
+            originalZip.forEach((relativePath, zipEntry) => {
+                const sanitized = sanitizeFilename(relativePath);
+                fileEntries.push({
+                    originalName: relativePath,
+                    newName: sanitized,
+                    isDir: zipEntry.dir,
+                    zipObject: zipEntry
+                });
+            });
+
+            renderList();
+            document.getElementById('status-text').innerText = `${fileEntries.length} files loaded.`;
+
+        } catch (e) {
+            alert("Error: " + e.message);
+        }
+    }
+
+    // UPDATED SANITIZER: Keeps single quotes, removes double quotes/special chars
+    function sanitizeFilename(name) {
+        const parts = name.split('/');
+        const cleanParts = parts.map(part => {
+            // Allow: a-z, A-Z, 0-9, ., -, _, and ' (single quote/apostrophe)
+            // Remove: " (double quote), emojis, ?, :, *, etc.
+            let clean = part.replace(/[^a-zA-Z0-9.\-_\']/g, '_');
+            
+            // Cleanup underscores
+            clean = clean.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+            if (clean.length === 0) clean = "renamed_file";
+            return clean;
+        });
+        return cleanParts.join('/');
+    }
+
+    // UPDATED RENDERER: Uses DOM creation to safely handle quotes in UI
+    function renderList() {
+        const list = document.getElementById('file-list');
+        list.innerHTML = '';
+        
+        const maxDisplay = 200; // Performance limit for rendering
+        
+        fileEntries.slice(0, maxDisplay).forEach((entry, index) => {
+            if (entry.isDir) return; 
+
+            const row = document.createElement('div');
+            row.className = 'file-row';
+
+            // Column 1: Old Name (Safe Text Node)
+            const oldNameDiv = document.createElement('div');
+            oldNameDiv.className = 'old-name';
+            oldNameDiv.textContent = entry.originalName; // textContent handles escaping automatically
+            
+            // Column 2: Arrow
+            const arrowDiv = document.createElement('div');
+            arrowDiv.style.color = '#6b7280';
+            arrowDiv.textContent = 'âž”';
+
+            // Column 3: Input (Safe Value Assignment)
+            const inputContainer = document.createElement('div');
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'new-name';
+            input.value = entry.newName; // Safely sets value even if it has quotes
+            input.onchange = (e) => { fileEntries[index].newName = e.target.value; };
+            
+            inputContainer.appendChild(input);
+            row.appendChild(oldNameDiv);
+            row.appendChild(arrowDiv);
+            row.appendChild(inputContainer);
+            
+            list.appendChild(row);
+        });
+
+        if (fileEntries.length > maxDisplay) {
+            const msg = document.createElement('div');
+            msg.innerText = `...and ${fileEntries.length - maxDisplay} more (hidden)`;
+            msg.style.padding = '10px';
+            msg.style.textAlign = 'center';
+            msg.style.color = '#9ca3af';
+            list.appendChild(msg);
+        }
+    }
+
+    async function processAndDownload() {
+        const btn = document.getElementById('download-btn');
+        btn.innerText = "Processing...";
+        btn.disabled = true;
+
+        try {
+            const newZip = new JSZip();
+            for (const entry of fileEntries) {
+                if (entry.isDir) {
+                    newZip.folder(entry.newName);
+                } else {
+                    const content = await entry.zipObject.async("blob");
+                    newZip.file(entry.newName, content);
+                }
+            }
+            const content = await newZip.generateAsync({type: "blob"});
+            saveAs(content, "fixed_files.zip");
+            btn.innerText = "Done!";
+        } catch (e) {
+            alert("Error: " + e.message);
+            btn.innerText = "Download Fixed Zip";
+        } finally {
+            btn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
