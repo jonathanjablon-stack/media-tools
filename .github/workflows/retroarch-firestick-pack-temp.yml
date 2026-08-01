@@ -1,10 +1,12 @@
 name: Temporary RetroArch Firestick Core Pack
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - retroarch-firestick-pack-temp-2
-  workflow_dispatch:
 
 permissions:
   contents: read
