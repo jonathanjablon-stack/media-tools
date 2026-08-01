@@ -1,11 +1,10 @@
 name: Temporary RetroArch Firestick Core Pack
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
-    paths:
-      - .github/workflows/retroarch-firestick-pack-temp.yml
+      - retroarch-firestick-pack-temp-2
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,20 +40,20 @@ jobs:
           done
 
           cat > "$ROOT/README.txt" <<'EOF'
-          Official Libretro Android core archives for RetroArch.
+Official Libretro Android core archives for RetroArch.
 
-          Included systems:
-          - NES: FCEUmm
-          - SNES: Snes9x
-          - Sega Master System, Genesis, Sega CD, and Game Gear: Genesis Plus GX
-          - Arcade: FinalBurn Neo and MAME 2003-Plus
+Included systems:
+- NES: FCEUmm
+- SNES: Snes9x
+- Sega Master System, Genesis, Sega CD, and Game Gear: Genesis Plus GX
+- Arcade: FinalBurn Neo and MAME 2003-Plus
 
-          Architectures:
-          - arm64-v8a
-          - armeabi-v7a
+Architectures:
+- arm64-v8a
+- armeabi-v7a
 
-          No ROMs or BIOS files are included.
-          EOF
+No ROMs or BIOS files are included.
+EOF
 
           find "$ROOT" -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > "$ROOT/SHA256SUMS.txt"
 
