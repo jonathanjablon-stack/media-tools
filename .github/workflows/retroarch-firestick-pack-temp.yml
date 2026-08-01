@@ -68,4 +68,4 @@ EOF
           compression-level: 0
           retention-days: 1
 
-# One-time packaging run.
+# One-time packaging run, ready.
