@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151823">
+  <title>CarStream</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <strong>CarStream</strong>
+      <span id="clientName"></span>
+    </div>
+    <span id="connection" class="status offline">offline</span>
+  </header>
+
+  <main>
+    <section id="onboarding" class="panel onboarding hidden">
+      <h1>Name this tablet</h1>
+      <p>This name appears on the phone’s control screen.</p>
+      <input id="nameInput" maxlength="30" placeholder="Kids' tablet" autocomplete="off">
+      <button id="startButton" class="primary">Start CarStream</button>
+      <p class="small">This first tap also helps the browser permit parent-started playback. Some browser versions may still require one tap after a remote launch.</p>
+    </section>
+
+    <section id="lockedBanner" class="locked hidden">
+      Parent control is on. Playback is being controlled from the phone.
+    </section>
+
+    <section id="playerPanel" class="player-panel hidden">
+      <div class="video-wrap">
+        <video id="video" playsinline preload="metadata"></video>
+        <button id="gestureButton" class="gesture hidden">Tap once to allow playback</button>
+      </div>
+      <div class="now-playing">
+        <div>
+          <div class="eyebrow">NOW PLAYING</div>
+          <h2 id="nowTitle">Nothing playing</h2>
+        </div>
+        <div id="timeText" class="time">0:00 / 0:00</div>
+      </div>
+      <div id="customControls" class="controls">
+        <button data-command="back">-10</button>
+        <button id="playButton">Play</button>
+        <button data-command="forward">+30</button>
+        <button id="fullscreenButton">Fullscreen</button>
+      </div>
+    </section>
+
+    <section id="libraryPanel" class="panel hidden">
+      <div class="library-heading">
+        <div>
+          <div class="eyebrow">LIBRARY</div>
+          <h1>Pick something</h1>
+        </div>
+        <button id="renameButton" class="secondary">Rename</button>
+      </div>
+      <input id="search" type="search" placeholder="Search movies and episodes">
+      <div id="libraryMessage" class="message">Loading library...</div>
+      <div id="library" class="library"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
