@@ -1,0 +1,98 @@
+name: Build CarStream APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [carstream-mvp]
+    paths:
+      - 'CarStream/**'
+      - 'carstream-bootstrap/**'
+      - '.github/workflows/carstream-android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Complete generated project files
+        run: |
+          bash carstream-bootstrap/01-config.sh
+          bash carstream-bootstrap/02-files.sh
+          mkdir -p CarStream/app/src/main/res/values
+          cat > CarStream/app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources><string name="app_name">CarStream</string></resources>
+          EOF
+          cat > CarStream/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+            <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+            <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+            <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+            <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+            <uses-permission android:name="android.permission.WAKE_LOCK" />
+            <application android:theme="@style/AppTheme" android:label="CarStream" android:usesCleartextTraffic="true" android:allowBackup="false">
+              <activity android:name=".HostActivity" android:screenOrientation="portrait" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+              <service android:name=".HostService" android:exported="false" android:foregroundServiceType="connectedDevice" />
+            </application>
+          </manifest>
+          EOF
+          mkdir -p CarStream/app/src/main/res/values
+          cat > CarStream/app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+              <item name="android:fontFamily">sans</item>
+              <item name="android:colorAccent">#5B8CFF</item>
+              <item name="android:navigationBarColor">#0C1017</item>
+              <item name="android:statusBarColor">#0C1017</item>
+              <item name="android:windowLightStatusBar">false</item>
+            </style>
+          </resources>
+          EOF
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build and test
+        working-directory: CarStream
+        run: |
+          gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Package source
+        run: zip -qr CarStream-source.zip CarStream README.md BUILD_STATUS.md TEST_REPORT.md 2>/dev/null || zip -qr CarStream-source.zip CarStream
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarStream-build
+          if-no-files-found: error
+          path: |
+            CarStream/app/build/outputs/apk/debug/app-debug.apk
+            CarStream-source.zip
