@@ -11,9 +11,9 @@ For more details see https://docs.gradle.org/8.10.2/release-notes.html
 Starting a Gradle Daemon (subsequent builds will be faster)
 > Task :app:preBuild UP-TO-DATE
 > Task :app:preDebugBuild UP-TO-DATE
+> Task :app:javaPreCompileDebug
 > Task :app:checkDebugAarMetadata
 > Task :app:generateDebugResValues
-> Task :app:javaPreCompileDebug
 > Task :app:mapDebugSourceSetPaths
 > Task :app:generateDebugResources
 > Task :app:packageDebugResources
@@ -25,22 +25,22 @@ Starting a Gradle Daemon (subsequent builds will be faster)
 > Task :app:processDebugManifest
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
 > Task :app:javaPreCompileDebugUnitTest
-> Task :app:processDebugManifestForPackage
 > Task :app:processDebugJavaRes NO-SOURCE
 > Task :app:processDebugUnitTestJavaRes NO-SOURCE
 > Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
 > Task :app:mergeDebugShaders
+> Task :app:processDebugManifestForPackage
 > Task :app:compileDebugShaders NO-SOURCE
 > Task :app:generateDebugAssets UP-TO-DATE
 > Task :app:mergeDebugAssets
-> Task :app:desugarDebugFileDependencies
 > Task :app:compressDebugAssets
+> Task :app:desugarDebugFileDependencies
 > Task :app:checkDebugDuplicateClasses
 > Task :app:mergeDebugJniLibFolders
 > Task :app:mergeExtDexDebug
-> Task :app:mergeLibDexDebug
 > Task :app:mergeDebugNativeLibs NO-SOURCE
 > Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:mergeLibDexDebug
 > Task :app:processDebugResources
 > Task :app:mergeDebugJavaResource
 > Task :app:validateSigningDebug
@@ -65,42 +65,19 @@ public final class MainActivity extends HostActivity { }
                                                         ^
   symbol:   method getDownloadUrl(MediaItem)
   location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:106: error: cannot find symbol
-        if (!Strings.isBlank(saved)) library.setApiKey(saved);
-                                            ^
-  symbol:   method setApiKey(String)
-  location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:176: error: cannot find symbol
-                library.setApiKey(key);
-                       ^
-  symbol:   method setApiKey(String)
-  location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:194: error: cannot find symbol
-        library.setApiKey(key);
-               ^
-  symbol:   method setApiKey(String)
-  location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:229: error: cannot find symbol
-                library.addMagnet(key, value);
-                       ^
-  symbol:   method addMagnet(String,String)
-  location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:255: error: cannot find symbol
-        MediaItem item = library.find(mediaId);
-                                ^
-  symbol:   method find(String)
-  location: variable library of type TorBoxLibraryClient
-/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:279: error: cannot find symbol
-                registry.snapshot(), library.currentLibrary());
-                                            ^
-  symbol:   method currentLibrary()
-  location: variable library of type TorBoxLibraryClient
+/home/runner/work/media-tools/media-tools/CarStream/app/src/main/java/com/carstream/app/HostService.java:60: error: no suitable constructor found for EmbeddedServer(HostService,int,String,PollingRegistry,TorBoxAccess,CellularNetworkProvider)
+        wifi=new WifiDirectController(this,this);token=randomToken();server=new EmbeddedServer(this,PORT,token,registry,torBox,networks);
+                                                                            ^
+    constructor EmbeddedServer.EmbeddedServer(Context,int,String,PollingRegistry,TorBoxLibraryClient,CellularNetworkProvider) is not applicable
+      (argument mismatch; TorBoxAccess cannot be converted to TorBoxLibraryClient)
+    constructor EmbeddedServer.EmbeddedServer(Context,int,String,ClientRegistry,TorBoxLibraryClient,CellularNetworkProvider) is not applicable
+      (argument mismatch; PollingRegistry cannot be converted to ClientRegistry)
 Note: Some input files use or override a deprecated API.
 Note: Recompile with -Xlint:deprecation for details.
-10 errors
+5 errors
 
 > Task :app:compileDebugJavaWithJavac FAILED
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786639953015.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786640190199.json
 
 FAILURE: Build failed with an exception.
 
@@ -299,5 +276,5 @@ Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Com
 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:48)
 
 
-BUILD FAILED in 41s
+BUILD FAILED in 37s
 26 actionable tasks: 26 executed
