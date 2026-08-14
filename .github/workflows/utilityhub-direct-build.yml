@@ -1,0 +1,269 @@
+name: Utility Hub Android verified build
+
+on:
+  push:
+    branches:
+      - utilityhub-build-20260814
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_URL: https://filebin.net/utilityhub-efc2e6834efe/utilityhub-source.zip
+  SOURCE_SHA256: efc2e6834efe4047b082a6fe68df9ac19d4876d9d09de30b8ef15245ba02679b
+  PROJECT_DIR: utilityhub
+  RELEASE_TAG: utilityhub-v1.0.0-build
+
+concurrency:
+  group: utilityhub-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Unit tests, lint, build, and package inspection
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and verify exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --connect-timeout 20 "$SOURCE_URL" -o utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+          rm -rf "$PROJECT_DIR"
+          mkdir "$PROJECT_DIR"
+          unzip -q utilityhub-source.zip -d "$PROJECT_DIR"
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
+
+      - name: Run JVM tests, lint, and assemble
+        id: gradle_verify
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug 2>&1 | tee ../verify-build.log
+
+      - name: Inspect APK identity and native playback libraries
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          APP_ID="$(apkanalyzer manifest application-id "$APK")"
+          test "$APP_ID" = "com.jon.utilityhub.debug"
+          unzip -l "$APK" | grep -q 'lib/x86_64/libvlc.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libvlc.so'
+          sha256sum "$APK" | tee ../app-debug.apk.sha256
+
+      - name: Upload verification APK and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utilityhub-verification
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            utilityhub/app/build/outputs/apk/debug/app-debug.apk
+            utilityhub/app/build/reports/tests/testDebugUnitTest/
+            utilityhub/app/build/reports/lint-results-debug.html
+            utilityhub/app/build/reports/lint-results-debug.xml
+            verify-build.log
+            app-debug.apk.sha256
+
+      - name: Publish compiler diagnostics on failure
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: utilityhub-verify-diagnostics
+          name: Utility Hub verify diagnostics
+          target_commitish: utilityhub-build-20260814
+          make_latest: false
+          overwrite_files: true
+          files: verify-build.log
+
+  instrumentation:
+    name: Android 35 launch and VLC playback tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and verify exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --connect-timeout 20 "$SOURCE_URL" -o utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+          rm -rf "$PROJECT_DIR"
+          mkdir "$PROJECT_DIR"
+          unzip -q utilityhub-source.zip -d "$PROJECT_DIR"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build app and instrumentation APKs
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee ../instrumentation-build.log
+
+      - name: Run emulator tests and independent launch check
+        id: emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          working-directory: utilityhub
+          script: |
+            set -o pipefail
+            gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest 2>&1 | tee ../connected-tests.log
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am force-stop com.jon.utilityhub.debug
+            adb shell am start -W -n com.jon.utilityhub.debug/com.jon.utilityhub.MainActivity | tee ../launch.txt
+            sleep 5
+            test -n "$(adb shell pidof com.jon.utilityhub.debug)"
+            adb shell uiautomator dump /sdcard/window.xml
+            adb pull /sdcard/window.xml ../window.xml
+            grep -q "Utility Hub" ../window.xml
+            adb exec-out screencap -p > ../home-screen.png
+            adb logcat -d > ../logcat.txt
+            if grep -q "FATAL EXCEPTION" ../logcat.txt; then
+              grep -A 50 -B 8 "FATAL EXCEPTION" ../logcat.txt
+              exit 1
+            fi
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utilityhub-emulator-evidence
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            utilityhub/app/build/reports/androidTests/connected/
+            utilityhub/app/build/outputs/androidTest-results/connected/
+            instrumentation-build.log
+            connected-tests.log
+            launch.txt
+            window.xml
+            home-screen.png
+            logcat.txt
+
+      - name: Prepare emulator diagnostic bundle
+        if: failure()
+        shell: bash
+        run: |
+          zip -q utilityhub-emulator-diagnostics.zip instrumentation-build.log connected-tests.log launch.txt window.xml logcat.txt home-screen.png 2>/dev/null || true
+          test -f utilityhub-emulator-diagnostics.zip || zip -q utilityhub-emulator-diagnostics.zip instrumentation-build.log
+
+      - name: Publish emulator diagnostics on failure
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: utilityhub-emulator-diagnostics
+          name: Utility Hub emulator diagnostics
+          target_commitish: utilityhub-build-20260814
+          make_latest: false
+          overwrite_files: true
+          files: utilityhub-emulator-diagnostics.zip
+
+  package:
+    name: Publish tested APK and source
+    needs: [verify, instrumentation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and verify exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-all-errors --connect-timeout 20 "$SOURCE_URL" -o utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: utilityhub-verification
+          path: verified
+
+      - name: Assemble delivery files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deliverables
+          APK="$(find verified -type f -name app-debug.apk -print -quit)"
+          test -s "$APK"
+          cp "$APK" deliverables/UtilityHub-1.0.0-debug.apk
+          cp utilityhub-source.zip deliverables/UtilityHub-1.0.0-source.zip
+          sha256sum deliverables/UtilityHub-1.0.0-debug.apk > deliverables/UtilityHub-1.0.0-debug.apk.sha256
+          cat > deliverables/TEST_RESULTS.txt <<TXT
+          Utility Hub 1.0.0
+          Commit: $GITHUB_SHA
+          Source SHA-256: $SOURCE_SHA256
+
+          Verification layers completed successfully:
+          1. JVM unit tests, including file parsing, page-range handling, archive traversal safety, TorBox response parsing, and mock-server request tests.
+          2. Android lint, debug APK assembly, manifest identity inspection, and arm64 plus x86_64 VLC native-library inspection.
+          3. Android API 35 emulator instrumentation, independent app launch/UI verification, fatal-exception scan, and native VLC playback smoke test.
+
+          This APK is debug-signed for direct sideloading and testing.
+          TXT
+
+      - name: Upload final delivery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UtilityHub-deliverables
+          if-no-files-found: error
+          retention-days: 30
+          path: deliverables/
+
+      - name: Publish downloadable GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Utility Hub 1.0.0 verified build
+          body: |
+            Automated verified Android build. The APK is debug-signed for direct sideloading.
+          target_commitish: utilityhub-build-20260814
+          make_latest: false
+          overwrite_files: true
+          files: |
+            deliverables/UtilityHub-1.0.0-debug.apk
+            deliverables/UtilityHub-1.0.0-debug.apk.sha256
+            deliverables/UtilityHub-1.0.0-source.zip
+            deliverables/TEST_RESULTS.txt
