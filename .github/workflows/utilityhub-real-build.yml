@@ -1,0 +1,220 @@
+name: Utility Hub verified Android build
+
+on:
+  push:
+    branches:
+      - utilityhub-real-build-20260814
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA256: 1f9e485831b642a379f9038aac5918a500f9f31428df98ad55a5aa62d27b2a8b
+
+concurrency:
+  group: utilityhub-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: JVM tests, lint, build, and APK inspection
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct, verify, and expand source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .utilityhub-source/part*.b64 | base64 --decode > utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+          rm -rf utilityhub
+          mkdir utilityhub
+          unzip -q utilityhub-source.zip -d utilityhub
+          test -f utilityhub/settings.gradle
+          test -f utilityhub/app/build.gradle
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
+
+      - name: Run JVM tests, Android lint, and APK assembly
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug 2>&1 | tee ../verify-build.log
+
+      - name: Inspect APK package and native playback libraries
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          APP_ID="$(apkanalyzer manifest application-id "$APK")"
+          test "$APP_ID" = "com.jon.utilityhub.debug"
+          unzip -t "$APK" >/dev/null
+          unzip -l "$APK" | grep -q 'classes.dex'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libvlc.so'
+          unzip -l "$APK" | grep -q 'lib/x86_64/libvlc.so'
+          sha256sum "$APK" | tee ../app-debug.apk.sha256
+
+      - name: Upload build, tests, lint, and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utilityhub-verification
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            utilityhub/app/build/outputs/apk/debug/app-debug.apk
+            utilityhub/app/build/reports/tests/testDebugUnitTest/
+            utilityhub/app/build/reports/lint-results-debug.html
+            utilityhub/app/build/reports/lint-results-debug.xml
+            verify-build.log
+            app-debug.apk.sha256
+
+  instrumentation:
+    name: Android 35 emulator launch and LibVLC tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct, verify, and expand source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .utilityhub-source/part*.b64 | base64 --decode > utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+          rm -rf utilityhub
+          mkdir utilityhub
+          unzip -q utilityhub-source.zip -d utilityhub
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build application and instrumentation APKs
+        working-directory: utilityhub
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee ../instrumentation-build.log
+
+      - name: Run instrumentation and independent launch checks
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -o pipefail
+            cd utilityhub
+            gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest 2>&1 | tee ../connected-tests.log
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am force-stop com.jon.utilityhub.debug
+            adb shell am start -W -n com.jon.utilityhub.debug/com.jon.utilityhub.MainActivity | tee ../launch.txt
+            sleep 5
+            test -n "$(adb shell pidof com.jon.utilityhub.debug)"
+            adb shell uiautomator dump /sdcard/window.xml
+            adb pull /sdcard/window.xml ../window.xml
+            grep -q "Utility Hub" ../window.xml
+            adb exec-out screencap -p > ../home-screen.png
+            adb logcat -d > ../logcat.txt
+            if grep -q "FATAL EXCEPTION" ../logcat.txt; then
+              grep -A 60 -B 10 "FATAL EXCEPTION" ../logcat.txt
+              exit 1
+            fi
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utilityhub-emulator-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            utilityhub/app/build/reports/androidTests/connected/
+            utilityhub/app/build/outputs/androidTest-results/connected/
+            instrumentation-build.log
+            connected-tests.log
+            launch.txt
+            window.xml
+            home-screen.png
+            logcat.txt
+
+  package:
+    name: Publish verified deliverables
+    needs: [verify, instrumentation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: utilityhub-verification
+          path: verified
+
+      - name: Reconstruct and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .utilityhub-source/part*.b64 | base64 --decode > utilityhub-source.zip
+          echo "$SOURCE_SHA256  utilityhub-source.zip" | sha256sum -c -
+
+      - name: Assemble delivery set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir deliverables
+          APK="$(find verified -type f -name app-debug.apk -print -quit)"
+          test -s "$APK"
+          cp "$APK" deliverables/UtilityHub-1.0.1-debug.apk
+          cp utilityhub-source.zip deliverables/UtilityHub-1.0.1-source.zip
+          sha256sum deliverables/UtilityHub-1.0.1-debug.apk > deliverables/UtilityHub-1.0.1-debug.apk.sha256
+          cat > deliverables/TEST_RESULTS.txt <<TXT
+          Utility Hub 1.0.1
+          Commit: $GITHUB_SHA
+
+          Verification stages completed successfully:
+          1. JVM tests covering file-type recognition, PDF page ranges, CSV parsing, TorBox response handling, bearer authentication, and multipart magnet request construction.
+          2. Android lint, debug APK assembly, manifest application-ID inspection, ZIP integrity, DEX presence, and ARM64 plus x86_64 LibVLC native-library inspection.
+          3. Android API 35 emulator instrumentation, encrypted-key storage test, native LibVLC initialization test, dashboard launch test, independent ADB launch, UI hierarchy verification, screenshot capture, and fatal-exception scan.
+
+          The APK is debug-signed for direct sideloading.
+          Live TorBox account behavior requires the user's own API key and was not exercised by CI.
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UtilityHub-deliverables
+          if-no-files-found: error
+          retention-days: 30
+          path: deliverables/
