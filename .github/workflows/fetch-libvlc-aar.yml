@@ -1,0 +1,36 @@
+name: Fetch LibVLC AAR
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [carstream-libvlc-fetch]
+    paths:
+      - '.github/workflows/fetch-libvlc-aar.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download LibVLC 3.6.0 from Maven Central
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-delay 2 \
+            --output libvlc-all-3.6.0.aar \
+            https://repo1.maven.org/maven2/org/videolan/android/libvlc-all/3.6.0/libvlc-all-3.6.0.aar
+          test "$(stat -c%s libvlc-all-3.6.0.aar)" -gt 80000000
+          unzip -t libvlc-all-3.6.0.aar
+          sha256sum libvlc-all-3.6.0.aar > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvlc-all-3.6.0
+          path: |
+            libvlc-all-3.6.0.aar
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
